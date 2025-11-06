@@ -1,1 +1,322 @@
-heloo
+<html lang="en"><head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Snake — Single Page</title>
+	<style>
+		:root{--bg:#0b1220;--panel:rgba(255,255,255,0.06);--accent:#4ee089}
+		html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial;background:var(--bg);color:#eee;display:flex;align-items:center;justify-content:center}
+		.wrap{width:100%;max-width:760px;padding:18px;box-sizing:border-box}
+		h1{margin:0 0 8px 0;text-align:center}
+		#gameWrap{position:relative;background:linear-gradient(180deg,#071026,#0b1220);border-radius:8px;padding:12px}
+		canvas{display:block;background:#071826;border-radius:6px;width:100%;height:auto}
+		#hud{display:flex;justify-content:space-between;color:#dfefff;margin-top:8px}
+		.btn{background:var(--panel);color:#fff;padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);cursor:pointer}
+		#overlay{position:absolute;left:0;top:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+		#overlay .panel{pointer-events:auto;background:rgba(0,0,0,0.7);padding:16px 20px;border-radius:8px;text-align:center}
+	</style>
+</head>
+<body>
+	<div class="wrap">
+		<h1>Snake</h1>
+		<div id="gameWrap">
+			<canvas id="game" width="600" height="600"></canvas>
+			<div id="overlay" style="pointer-events: auto;"><div class="panel"><h2>Game Over</h2><div style="margin-top:8px">Score: 0</div><div style="margin-top:12px"><button id="rbtn" class="btn">Play Again</button></div></div></div>
+		</div>
+		<div id="hud">
+			<div>Score: <span id="score">0</span></div>
+			<div><button id="restart" class="btn">Restart</button></div>
+		</div>
+	</div>
+
+	<script>
+		// Simple Snake game (single file)
+		const canvas = document.getElementById('game');
+		const ctx = canvas.getContext('2d');
+		const W = canvas.width, H = canvas.height;
+
+		// GRID
+		const TILE = 20; // pixel size
+		const COLS = Math.floor(W / TILE);
+		const ROWS = Math.floor(H / TILE);
+
+			// Game state
+			let snake = []; // array of {x,y}
+			let dir = {x:1,y:0};
+			let nextDir = {x:1,y:0};
+			let food = null;
+			let growing = 0;
+			let score = 0;
+			let running = true;
+			let tickInterval = 100; // ms per move
+			let lastTick = 0;
+
+			// obstacles (jack-o'-lanterns) stored as set of "x,y"
+			const obstacles = new Set();
+
+			function placeObstacles(){
+				obstacles.clear();
+				// place pumpkins around the perimeter
+				for(let x=0;x<COLS;x++){ obstacles.add(x+","+0); obstacles.add(x+","+(ROWS-1)); }
+				for(let y=0;y<ROWS;y++){ obstacles.add(0+","+y); obstacles.add((COLS-1)+","+y); }
+
+				// add some pumpkins near the edges randomly for flavor
+				for(let i=0;i<12;i++){
+					const side = Math.floor(Math.random()*4);
+					let x,y;
+					if(side===0){ x = 1 + Math.floor(Math.random()*3); y = 1 + Math.floor(Math.random()*(ROWS-2)); }
+					else if(side===1){ x = COLS-2 - Math.floor(Math.random()*3); y = 1 + Math.floor(Math.random()*(ROWS-2)); }
+					else if(side===2){ y = 1 + Math.floor(Math.random()*3); x = 1 + Math.floor(Math.random()*(COLS-2)); }
+					else { y = ROWS-2 - Math.floor(Math.random()*3); x = 1 + Math.floor(Math.random()*(COLS-2)); }
+					obstacles.add(x+","+y);
+				}
+			}
+
+			function drawPumpkin(cellX, cellY){
+				const px = cellX * TILE, py = cellY * TILE;
+				// pumpkin body
+				ctx.fillStyle = '#ff8c2b'; ctx.beginPath(); ctx.ellipse(px+TILE/2, py+TILE/2, TILE*0.42, TILE*0.36, 0, 0, Math.PI*2); ctx.fill();
+				// stripes
+				ctx.fillStyle = '#d97620'; for(let i=0;i<3;i++){ const ox = (i-1)*6; ctx.beginPath(); ctx.ellipse(px+TILE/2 + ox, py+TILE/2, TILE*0.15, TILE*0.34, 0, 0, Math.PI*2); ctx.fill(); }
+				// stem
+				ctx.fillStyle = '#3b2b14'; ctx.fillRect(px+TILE/2 - 3, py+4, 6, 8);
+				// face (triangles)
+				ctx.fillStyle = '#090900';
+				// eyes
+				ctx.beginPath(); ctx.moveTo(px+TILE*0.32, py+TILE*0.38); ctx.lineTo(px+TILE*0.40, py+TILE*0.50); ctx.lineTo(px+TILE*0.24, py+TILE*0.50); ctx.closePath(); ctx.fill();
+				ctx.beginPath(); ctx.moveTo(px+TILE*0.68, py+TILE*0.38); ctx.lineTo(px+TILE*0.76, py+TILE*0.50); ctx.lineTo(px+TILE*0.60, py+TILE*0.50); ctx.closePath(); ctx.fill();
+				// mouth
+				ctx.beginPath(); ctx.moveTo(px+TILE*0.28, py+TILE*0.66); ctx.lineTo(px+TILE*0.36, py+TILE*0.60); ctx.lineTo(px+TILE*0.44, py+TILE*0.66); ctx.lineTo(px+TILE*0.52, py+TILE*0.60); ctx.lineTo(px+TILE*0.60, py+TILE*0.66); ctx.lineTo(px+TILE*0.72, py+TILE*0.62); ctx.lineTo(px+TILE*0.72, py+TILE*0.72); ctx.lineTo(px+TILE*0.28, py+TILE*0.72); ctx.closePath(); ctx.fill();
+			}
+
+					function relocateRandomObstacle(){
+						if(obstacles.size === 0) return;
+						const keys = Array.from(obstacles);
+						// pick a random pumpkin to relocate
+						const chosen = keys[Math.floor(Math.random()*keys.length)];
+						obstacles.delete(chosen);
+						// try to place it somewhere new (not on snake, not on food)
+						let tries = 0;
+						while(tries++ < 1000){
+							const x = 1 + Math.floor(Math.random()*(COLS-2));
+							const y = 1 + Math.floor(Math.random()*(ROWS-2));
+							const key = x+","+y;
+							if(!obstacles.has(key) && !snake.some(s=>s.x===x && s.y===y) && !(food && food.x===x && food.y===y)){
+								obstacles.add(key);
+								return;
+							}
+						}
+						// if we couldn't find a spot, restore the chosen one
+						const [cx,cy] = chosen.split(',').map(Number); obstacles.add(cx+','+cy);
+					}
+
+			function reset(){
+				snake = [ {x:Math.floor(COLS/2), y:Math.floor(ROWS/2)}, {x:Math.floor(COLS/2)-1, y:Math.floor(ROWS/2)}, {x:Math.floor(COLS/2)-2, y:Math.floor(ROWS/2)} ];
+				dir = {x:1,y:0}; nextDir = {x:1,y:0};
+				placeObstacles();
+				spawnFood();
+				growing = 0; score = 0; running = true; document.getElementById('score').textContent = score; hideOverlay();
+			}
+
+		function spawnFood(){
+			// pick random empty cell
+			let tries = 0;
+			while(tries++ < 1000){
+				const x = Math.floor(Math.random()*COLS);
+				const y = Math.floor(Math.random()*ROWS);
+					const key = x+","+y;
+					if(!snake.some(s => s.x===x && s.y===y) && !obstacles.has(key)) {
+						const isSpecial = Math.random() < 0.15; // 15% chance for special food that relocates a pumpkin
+						food = {x,y, type: isSpecial ? 'pumpkin' : 'normal'};
+						return;
+					}
+			}
+			// fallback: linear search
+				for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++) if(!snake.some(s=>s.x===x && s.y===y) && !obstacles.has(x+","+y)){ const isSpecial = Math.random() < 0.15; food={x,y, type:isSpecial? 'pumpkin':'normal'}; return; }
+		}
+
+		function step(){
+			// apply nextDir (prevent opposite turn)
+			if((nextDir.x !== -dir.x || nextDir.y !== -dir.y)) dir = nextDir;
+			const head = {x: snake[0].x + dir.x, y: snake[0].y + dir.y};
+
+			// wall collision => game over
+			if(head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS){ gameOver(); return; }
+
+			// obstacle collision (pumpkins)
+			if(obstacles.has(head.x+","+head.y)){ gameOver(); return; }
+
+			// self collision
+			if(snake.some(seg => seg.x === head.x && seg.y === head.y)){ gameOver(); return; }
+
+			snake.unshift(head);
+					if(food && head.x === food.x && head.y === food.y){
+						if(food.type === 'pumpkin'){
+							// special: relocate a random pumpkin obstacle and give a small bonus
+							relocateRandomObstacle();
+							score += 2;
+						} else {
+							score += 1;
+						}
+						document.getElementById('score').textContent = score; growing += 1; spawnFood();
+					}
+
+			if(growing>0){ growing--; } else { snake.pop(); }
+		}
+
+		function gameOver(){ running = false; showOverlay('Game Over', 'Score: '+score); }
+
+		function showOverlay(title, sub){ const ov = document.getElementById('overlay'); ov.innerHTML = '<div class="panel"><h2>'+title+'</h2><div style="margin-top:8px">'+sub+'</div><div style="margin-top:12px"><button id="rbtn" class="btn">Play Again</button></div></div>'; ov.style.pointerEvents='auto'; document.getElementById('rbtn').addEventListener('click', ()=>{ reset(); }); }
+		function hideOverlay(){ const ov = document.getElementById('overlay'); ov.innerHTML=''; ov.style.pointerEvents='none'; }
+
+		// Input
+		window.addEventListener('keydown', e=>{
+			const k = e.key.toLowerCase();
+			if(k === 'arrowup' || k==='w'){ nextDir = {x:0,y:-1}; e.preventDefault(); }
+			if(k === 'arrowdown' || k==='s'){ nextDir = {x:0,y:1}; e.preventDefault(); }
+			if(k === 'arrowleft' || k==='a'){ nextDir = {x:-1,y:0}; e.preventDefault(); }
+			if(k === 'arrowright' || k==='d'){ nextDir = {x:1,y:0}; e.preventDefault(); }
+			if(k === ' '){ if(!running) reset(); }
+		});
+
+		// restart button
+		document.getElementById('restart').addEventListener('click', ()=>{ reset(); });
+
+		// draw
+		function draw(){
+			// clear
+			ctx.fillStyle = '#041525'; ctx.fillRect(0,0,W,H);
+
+			// draw grid (subtle)
+			ctx.strokeStyle = 'rgba(255,255,255,0.03)'; ctx.lineWidth = 1;
+			for(let x=0;x<=COLS;x++){ const px = x*TILE; ctx.beginPath(); ctx.moveTo(px,0); ctx.lineTo(px,H); ctx.stroke(); }
+			for(let y=0;y<=ROWS;y++){ const py = y*TILE; ctx.beginPath(); ctx.moveTo(0,py); ctx.lineTo(W,py); ctx.stroke(); }
+
+									// draw food
+									if(food){
+										if(food.type === 'pumpkin'){
+											// special food - golden orb
+											const cx = food.x*TILE + TILE/2, cy = food.y*TILE + TILE/2;
+											const r = TILE*0.36;
+											// glow
+											ctx.fillStyle = 'rgba(255,200,80,0.12)'; ctx.beginPath(); ctx.arc(cx,cy,r+6,0,Math.PI*2); ctx.fill();
+											ctx.fillStyle = '#ffd86b'; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+											ctx.fillStyle = '#ffb347'; ctx.fillRect(food.x*TILE+TILE*0.28, food.y*TILE+TILE*0.28, TILE*0.44, TILE*0.44);
+										} else {
+											// normal food drawn as an apple
+											const cx = food.x*TILE + TILE/2, cy = food.y*TILE + TILE/2;
+											const r = TILE*0.38;
+											// apple body (radial gradient)
+											const g = ctx.createRadialGradient(cx - r*0.3, cy - r*0.3, r*0.1, cx, cy, r);
+											g.addColorStop(0, '#ff8b8b'); g.addColorStop(0.6, '#ff4b4b'); g.addColorStop(1, '#c92b2b');
+											ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+											// shine
+											ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.beginPath(); ctx.ellipse(cx - r*0.35, cy - r*0.45, r*0.22, r*0.12, -0.4, 0, Math.PI*2); ctx.fill();
+											// stem
+											ctx.fillStyle = '#4b2f14'; ctx.fillRect(cx - 3, cy - r - 2, 6, 8);
+											// leaf
+											ctx.fillStyle = '#2f8b3a'; ctx.beginPath(); ctx.ellipse(cx + 6, cy - r + 2, 6, 3.5, -0.6, 0, Math.PI*2); ctx.fill();
+										}
+									}
+
+					// draw obstacles (pumpkins)
+					obstacles.forEach(k => {
+						const [sx,sy] = k.split(',').map(Number);
+						// don't draw pumpkings under the snake head when game over animation might place them
+						drawPumpkin(sx, sy);
+					});
+
+					// draw snake (circular segments, head with features)
+					for(let i=snake.length-1;i>=0;i--){
+						const s = snake[i];
+						const cx = s.x*TILE + TILE/2, cy = s.y*TILE + TILE/2;
+						const radius = TILE*0.44;
+						if(i===0){
+							// head
+							  ctx.fillStyle = '#b35eff'; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill();
+							// eyes
+							ctx.fillStyle = '#071014';
+							const eyeOffset = TILE*0.18;
+							if(dir.x !== 0){
+								// facing left/right, eyes slightly forward
+								const fx = cx + dir.x * TILE*0.12;
+								ctx.beginPath(); ctx.arc(fx - eyeOffset, cy - TILE*0.12, TILE*0.06, 0, Math.PI*2); ctx.fill();
+								ctx.beginPath(); ctx.arc(fx + eyeOffset, cy - TILE*0.12, TILE*0.06, 0, Math.PI*2); ctx.fill();
+							} else {
+								// facing up/down
+								const fy = cy + dir.y * TILE*0.12;
+								ctx.beginPath(); ctx.arc(cx - eyeOffset, fy - TILE*0.02, TILE*0.06, 0, Math.PI*2); ctx.fill();
+								ctx.beginPath(); ctx.arc(cx + eyeOffset, fy - TILE*0.02, TILE*0.06, 0, Math.PI*2); ctx.fill();
+							}
+							// tongue
+							ctx.fillStyle = '#ff5f5f';
+							const tx = cx + dir.x * (radius + 2);
+							const ty = cy + dir.y * (radius + 2);
+							if(dir.x !== 0){
+								// horizontal tongue
+								ctx.fillRect(tx - (dir.x>0?0:4), ty - 2, 6, 4);
+								// fork
+								ctx.fillRect(tx + (dir.x>0?4: -6), ty - 3, 3, 3);
+								ctx.fillRect(tx + (dir.x>0?4: -6), ty + 0, 3, 3);
+							} else {
+								// vertical tongue
+								ctx.fillRect(tx - 2, ty - (dir.y>0?0:4), 4, 6);
+								ctx.fillRect(tx - 3, ty + (dir.y>0?4:-6), 3, 3);
+								ctx.fillRect(tx + 0, ty + (dir.y>0?4:-6), 3, 3);
+							}
+						} else {
+							// body segment
+							  ctx.fillStyle = '#8a4bff'; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill();
+						}
+					}
+		}
+
+		// main loop
+		function loop(ts){
+			if(!lastTick) lastTick = ts;
+			if(ts - lastTick >= tickInterval){ if(running) step(); lastTick = ts; }
+			draw(); requestAnimationFrame(loop);
+		}
+
+		// init
+		reset(); requestAnimationFrame(loop);
+	</script>
+<!-- Code injected by live-server -->
+<script>
+	// <![CDATA[  <-- For SVG support
+	if ('WebSocket' in window) {
+		(function () {
+			function refreshCSS() {
+				var sheets = [].slice.call(document.getElementsByTagName("link"));
+				var head = document.getElementsByTagName("head")[0];
+				for (var i = 0; i < sheets.length; ++i) {
+					var elem = sheets[i];
+					var parent = elem.parentElement || head;
+					parent.removeChild(elem);
+					var rel = elem.rel;
+					if (elem.href && typeof rel != "string" || rel.length == 0 || rel.toLowerCase() == "stylesheet") {
+						var url = elem.href.replace(/(&|\?)_cacheOverride=\d+/, '');
+						elem.href = url + (url.indexOf('?') >= 0 ? '&' : '?') + '_cacheOverride=' + (new Date().valueOf());
+					}
+					parent.appendChild(elem);
+				}
+			}
+			var protocol = window.location.protocol === 'http:' ? 'ws://' : 'wss://';
+			var address = protocol + window.location.host + window.location.pathname + '/ws';
+			var socket = new WebSocket(address);
+			socket.onmessage = function (msg) {
+				if (msg.data == 'reload') window.location.reload();
+				else if (msg.data == 'refreshcss') refreshCSS();
+			};
+			if (sessionStorage && !sessionStorage.getItem('IsThisFirstTime_Log_From_LiveServer')) {
+				console.log('Live reload enabled.');
+				sessionStorage.setItem('IsThisFirstTime_Log_From_LiveServer', true);
+			}
+		})();
+	}
+	else {
+		console.error('Upgrade your browser. This Browser is NOT supported WebSocket for Live-Reloading.');
+	}
+	// ]]>
+</script>
+
+</body></html>
